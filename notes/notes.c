@@ -137,5 +137,8 @@
 	}
 	
 	When mounting use the whole path.
-	
+
+	There should be option doing --help to make filesystem bigger
+
+
  */
