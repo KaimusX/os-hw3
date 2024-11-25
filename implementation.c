@@ -249,10 +249,6 @@ typedef struct {
   __myfs_off_t first_space;
 } list_t;
 
-// END OF STRUCTS
-
-/* START of fuse STRUCTS */
-
 typedef struct {
   uint32_t magic;
   __myfs_off_t root_dir;
@@ -269,22 +265,17 @@ typedef struct {
 
 typedef struct {
   size_t total_size;
-  __myfs_off_t first_file_block;  // This is an offset to the first file_block_t
+  __myfs_off_t first_file_block;  
 } file_t;
 
 typedef struct {
-  // Max number of children is given at the children array location -
-  // sizeof(size_t) divided by the sizeof(__myfs_off_t)
   size_t number_children;
-  // children is an offset to an array of offsets to folders and files. Children
-  // starts with '..' offsets
   __myfs_off_t children;
 } directory_t;
 
 typedef struct {
   char name[(size_t)256];
   char is_file;
-  // times[0]: last access date, times[1]: last modification date
   struct timespec times[2];
   union {
     file_t file;
