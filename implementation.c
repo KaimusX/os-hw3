@@ -1665,6 +1665,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
   initilaize_check(fsptr, fssize);
 
   // DO WORK
+  
 
   return -1; // Success
 }
