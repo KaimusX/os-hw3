@@ -1286,8 +1286,57 @@ int add_data(void *fsptr, file_t *file, size_t size, int *errnoptr) {
 int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
                           uid_t uid, gid_t gid,
                           const char *path, struct stat *stbuf) {
-  /* STUB */
-  return -1;
+  // Validate filesystem pointer and size
+  initial_check(fsptr, fssize); 
+
+  // Validate path
+  if (path == NULL || strlen(path) == 0) {
+    *errnoptr = ENOENT; // Path does not exist
+    return -1;
+  }
+
+  // Locate the file or directory node
+  node_t *node = path_solver(fsptr, path, 0);
+  if (node == NULL) {
+    *errnoptr = ENOENT; // File or directory not found
+    return -1;
+  }
+
+  // Set UID and GID
+  stbuf->st_uid = uid;
+  stbuf->st_gid = gid;
+
+  // Populate fields based on node type
+  if (node->is_file) {
+    // File-specific attributes
+    stbuf->st_mode = S_IFREG;
+    stbuf->st_nlink = ((nlink_t)1);            // Files have 1 link
+    stbuf->st_size = ((off_t)node->type.file.total_size); // File size
+  } else {
+    // Directory-specific attributes
+    stbuf->st_mode = S_IFDIR;
+
+    // Count the number of subdirectories, including `.` and `..`
+    directory_t *dir = &node->type.directory;
+    stbuf->st_nlink = 2; // Start with `.` and `..`
+    if (dir->children != 0) {
+      __myfs_off_t *children_offsets = off_to_ptr(fsptr, dir->children);
+      size_t num_children = dir->number_children;
+
+      for (size_t i = 0; i < num_children; i++) {
+        node_t *child = off_to_ptr(fsptr, children_offsets[i]);
+        if (!child->is_file) {
+          stbuf->st_nlink++; // Increment for each subdirectory
+        }
+      }
+    }
+  }
+
+  // Set access and modification times
+  stbuf->st_atim = node->times[0]; // Last access time
+  stbuf->st_mtim = node->times[1]; // Last modification time
+
+  return 0; // Success
 }
 
 /* Implements an emulation of the readdir system call on the filesystem 
@@ -1328,8 +1377,87 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, char ***namesptr) {
-  /* STUB */
-  return -1;
+  // Validate filesystem pointer and size
+  initial_check(fsptr, fssize);
+
+  // Validate path
+  if (path == NULL || strlen(path) == 0) {
+    *errnoptr = ENOENT; // Path does not exist
+    return -1;
+  }
+
+  // Locate the directory node
+  node_t *node = path_solver(fsptr, path, 0);
+  if (node == NULL) {
+    *errnoptr = ENOENT; // Directory not found
+    return -1;
+  }
+
+  // Check if the path refers to a directory
+  if (node->is_file) {
+    *errnoptr = ENOTDIR; // Not a directory
+    return -1;
+  }
+
+  // Get the directory structure
+  directory_t *dir = &node->type.directory;
+
+  // Check that directory have more than ".", ".." nodes inside
+  if (dir->number_children == 1) {
+    return 0;
+  }
+
+  // Get the children array
+  __myfs_off_t *children_offsets = off_to_ptr(fsptr, dir->children);
+  size_t num_children = dir->number_children;
+
+  // Filter out `.` and `..` entries and count remaining valid entries
+  size_t valid_entries = 0;
+  for (size_t i = 0; i < num_children; i++) {
+    node_t *child = off_to_ptr(fsptr, children_offsets[i]);
+    if (strcmp(child->name, ".") != 0 && strcmp(child->name, "..") != 0) {
+      valid_entries++;
+    }
+  }
+
+  // If no valid entries, return 0
+  if (valid_entries == 0) {
+    *namesptr = NULL;
+    return 0;
+  }
+
+  // Allocate memory for the array of names
+  char **names = calloc(valid_entries, sizeof(char *));
+  if (names == NULL) {
+    *errnoptr = EINVAL; // Memory allocation failure
+    return -1;
+  }
+
+  // Populate the names array with valid entries
+  size_t index = 0;
+  for (size_t i = 0; i < num_children; i++) {
+    node_t *child = off_to_ptr(fsptr, children_offsets[i]);
+    if (strcmp(child->name, ".") != 0 && strcmp(child->name, "..") != 0) {
+      // Allocate memory for the name and copy it
+      size_t name_length = strlen(child->name) + 1;
+      names[index] = calloc(name_length, sizeof(char));
+      if (names[index] == NULL) {
+        // Free previously allocated memory and return error
+        for (size_t j = 0; j < index; j++) {
+          free(names[j]);
+        }
+        free(names);
+        *errnoptr = EINVAL;
+        return -1;
+      }
+      strncpy(names[index], child->name, name_length);
+      index++;
+    }
+  }
+
+  // Set the output pointer and return the number of valid entries
+  *namesptr = names;
+  return valid_entries;
 }
 
 /* Implements an emulation of the mknod system call for regular files
@@ -1351,8 +1479,18 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+  initial_check(fsptr, fssize);
+
+  // Make a directory, 1 because it is a file
+  node_t *node = make_inode(fsptr, path, errnoptr, 1);
+
+  // Check if the node was successfully created, if it wasn't the errnoptr was
+  // already set so we just return failure with -1
+  if (node == NULL) {
+    return -1;
+  }
+  
+  return 0; // Success
 }
 
 /* Implements an emulation of the unlink system call for regular files
@@ -1369,8 +1507,58 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+  // Validate the filesystem pointer and size
+  initial_check(fsptr, fssize);
+
+  // Validate the path
+  if (path == NULL || strlen(path) == 0) {
+    *errnoptr = EINVAL; // Invalid path
+    return -1;
+  }
+
+  // Locate the node for the file to delete
+  node_t *node = path_solver(fsptr, path, 0);
+  if (node == NULL) {
+    *errnoptr = ENOENT; // File does not exist
+    return -1;
+  }
+
+  // Check if the node is a regular file
+  if (!node->is_file) {
+    *errnoptr = ENOTDIR; // Cannot unlink a directory
+    return -1;
+  }
+
+  // Get directory from node
+  directory_t *dict = &node->type.directory;
+
+  // Get last token which have the filename
+  unsigned long len;
+  char *filename = get_last_token(path, &len);
+
+  // Check that the parent does not contain a node with the same name as the one we are about to create
+  node_t *file_node = get_node(fsptr, dict, filename);
+  if (file_node == NULL) {
+    *errnoptr = ENOENT;
+    return -1;
+  }
+
+  // Check that file_node is actually a file
+  if (!file_node->is_file) {
+    *errnoptr = EISDIR; // Path given lead to a directory not a file
+    return -1;
+  }
+
+  // Free file information
+  file_t *file = &file_node->type.file;
+  if (file->total_size != 0) {
+    free_file_info(fsptr, file);
+  }
+
+  // Remove file_node from parent directory
+  remove_node(fsptr, dict, file_node);
+
+  return 0; // Success
 }
 
 /* Implements an emulation of the rmdir system call on the filesystem 
@@ -1390,8 +1578,44 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+  // Validate the filesystem pointer and size
+  initial_check(fsptr, fssize);
+
+  // Validate the path
+  if (path == NULL || strlen(path) == 0) {
+    *errnoptr = EINVAL; // Invalid path
+    return -1;
+  }
+
+  // Locate the directory node
+  node_t *dir_node = path_solver(fsptr, path, 0);
+  if (dir_node == NULL) {
+    *errnoptr = ENOENT; // Directory does not exist
+    return -1;
+  }
+
+  // Check if the node is a directory
+  if (!dir_node->is_file) {
+    *errnoptr = ENOTDIR; // Path is not a directory
+    return -1;
+  }
+
+  // Ensure the directory is empty (excluding "." and "..")
+  directory_t *dir = &dir_node->type.directory;
+  if (dir->number_children > 0) {
+    *errnoptr = ENOTEMPTY; // Directory is not empty
+    return -1;
+  }
+
+  // Get parent directory
+  __myfs_off_t *children = off_to_ptr(fsptr, dir->children);
+  node_t *parent_node = off_to_ptr(fsptr, *children);
+
+  // Free children of node and the node itself
+  __free_impl(fsptr, children);
+  remove_node(fsptr, &parent_node->type.directory, dir_node);
+
+  return 0; // Success
 }
 
 /* Implements an emulation of the mkdir system call on the filesystem 
@@ -1408,8 +1632,16 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+  initilaize_check(fsptr, fssize);
+
+  // Make a directory, 0 because it is not a file
+  node_t *node = make_inode(fsptr, path, errnoptr, 0);
+
+  if (node == NULL) {
+    return -1;
+  }
+
+  return 0;
 }
 
 /* Implements an emulation of the rename system call on the filesystem 
@@ -1430,8 +1662,12 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                          const char *from, const char *to) {
-  /* STUB */
-  return -1;
+  // Check if filesystem is valid
+  initilaize_check(fsptr, fssize);
+
+  // DO WORK
+
+  return -1; // Success
 }
 
 /* Implements an emulation of the truncate system call on the filesystem 
@@ -1460,7 +1696,7 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
     }
 
     // Locate the file by path
-    node_t *node = find_node_by_path(fsptr, path);
+    node_t *node = path_solver(fsptr, path, 0);
     if (node == NULL) {
         *errnoptr = ENOENT; // File not found
         return -1;
