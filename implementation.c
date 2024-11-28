@@ -28,6 +28,7 @@
 
 */
 
+#include "implementation.h"
 #include <stddef.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -239,8 +240,6 @@
 /* YOUR HELPER FUNCTIONS GO HERE */
 
 //// STRUCTS HERE
-
-typedef size_t __myfs_off_t;
 
 typedef struct {
   size_t remaining;
@@ -1701,7 +1700,7 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
         *errnoptr = ENOENT; // File not found
         return -1;
     }
-
+    
     // Ensure the node is a file
     if (!node->is_file) {
         *errnoptr = EISDIR; // Path refers to a directory
