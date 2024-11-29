@@ -242,15 +242,6 @@
 //// STRUCTS HERE
 
 typedef struct {
-  size_t remaining;
-  __myfs_off_t next_space;
-} allocated_node_t;
-
-typedef struct {
-  __myfs_off_t first_space;
-} list_node_t;
-
-typedef struct {
   uint32_t magic;
   size_t size;
   __myfs_off_t root_dir;
@@ -693,64 +684,39 @@ char *get_last_token(const char *path, unsigned long *token_len) {
 
 
 /* Splits a path into tokens based on a delimiter, skipping the last skip_n_tokens. */
-char **tokenize(const char delimiter, const char *path, int skip_n_tokens) {
-    if (path == NULL || skip_n_tokens < 0) {
-        return NULL; // Validate inputs
+char **tokenize(const char token, const char *path, int skip_n_tokens) {
+  int n_tokens = 0;
+  for (const char *c = path; *c != '\0'; c++) {
+    if (*c == token) {
+      n_tokens++;
     }
+  }
+  // n_tokens value would be of at least 1 because of root directory
+  // Do not tokenize the last skip_n_tokens
+  n_tokens -= skip_n_tokens;
 
-    // Count the number of tokens in the path
-    int n_tokens = 0;
-    for (const char *c = path; *c != '\0'; c++) {
-        if (*c == delimiter) {
-            n_tokens++;
-        }
+  char **tokens = (char **)malloc(((u_int)(n_tokens + 1)) * sizeof(char *));
+  const char *start = &path[1];  // Jump the first character which is '\'
+  const char *end = start;
+  char *t;
+
+  // Populate tokens
+  for (int i = 0; i < n_tokens; i++) {
+    while ((*end != token) && (*end != '\0')) {
+      end++;
     }
+    // Make space for the token
+    t = (char *)malloc((((u_int)(end - start)) + ((u_int)1)) * sizeof(char));
+    // Copy token
+    memcpy(t, start, ((size_t)(end - start)));
+    t[end - start] = '\0';
+    tokens[i] = t;
+    start = ++end;
+  }
+  // Make array null terminated
+  tokens[n_tokens] = NULL;
 
-    // Ensure at least one token exists (root directory) and adjust for skipped tokens
-    n_tokens -= skip_n_tokens;
-    if (n_tokens <= 0) {
-        return NULL; // Nothing to tokenize
-    }
-
-    // Allocate space for tokens array (+1 for null terminator)
-    char **tokens = (char **)malloc((n_tokens + 1) * sizeof(char *));
-    if (tokens == NULL) {
-        return NULL; // Allocation failed
-    }
-
-    const char *start = path + 1; // Skip the first character (assumed root '/')
-    const char *end = start;
-
-    // Populate tokens array
-    for (int i = 0; i < n_tokens; i++) {
-        while (*end != delimiter && *end != '\0') {
-            end++;
-        }
-
-        // Allocate space for the current token
-        int token_len = end - start;
-        tokens[i] = (char *)malloc((token_len + 1) * sizeof(char));
-        if (tokens[i] == NULL) {
-            // Free previously allocated tokens on failure
-            for (int j = 0; j < i; j++) {
-                free(tokens[j]);
-            }
-            free(tokens);
-            return NULL;
-        }
-
-        // Copy the token and null-terminate it
-        memcpy(tokens[i], start, token_len);
-        tokens[i][token_len] = '\0';
-
-        start = (*end == delimiter) ? end + 1 : end; // Advance to the next token
-        end = start;
-    }
-
-    // Null-terminate the array of tokens
-    tokens[n_tokens] = NULL;
-
-    return tokens;
+  return tokens;
 }
 
 
@@ -949,7 +915,7 @@ node_t *make_inode(void *fsptr, const char *path, int *errnoptr, int isfile) {
     } else {  // If creating a directory
         new_node->is_file = 0;
         dict = &new_node->type.directory;
-        dict->number_children = 1;  // Use the first child for ".."
+        dict->number_children = (size_t)1;  // Use the first child for ".."
 
         // Allocate space for 4 children in the new directory
         ask_size = 4 * sizeof(__myfs_off_t);
@@ -1631,7 +1597,7 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  initilaize_check(fsptr, fssize);
+  initial_check(fsptr, fssize);
 
   // Make a directory, 0 because it is not a file
   node_t *node = make_inode(fsptr, path, errnoptr, 0);
@@ -1662,7 +1628,7 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                          const char *from, const char *to) {
   // Check if filesystem is valid
-  initilaize_check(fsptr, fssize);
+  initial_check(fsptr, fssize);
 
   // DO WORK
   
