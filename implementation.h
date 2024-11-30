@@ -12,7 +12,6 @@ typedef struct {
 
 
 
-
 /* START memory allocation helper functions declarations */
 
 void add_allocation_space(void *fsptr, list_node_t *LL, allocated_node_t *alloc);
