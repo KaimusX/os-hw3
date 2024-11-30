@@ -1342,87 +1342,52 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, char ***namesptr) {
-  // Validate filesystem pointer and size
   initial_check(fsptr, fssize);
 
-  // Validate path
-  if (path == NULL || strlen(path) == 0) {
-    *errnoptr = ENOENT; // Path does not exist
-    return -1;
-  }
-
-  // Locate the directory node
   node_t *node = path_solver(fsptr, path, 0);
+
+  // Path could not be solved
   if (node == NULL) {
-    *errnoptr = ENOENT; // Directory not found
+    *errnoptr = ENOENT;
     return -1;
   }
 
-  // Check if the path refers to a directory
+  // Check that the node is a directory
   if (node->is_file) {
-    *errnoptr = ENOTDIR; // Not a directory
+    *errnoptr = ENOTDIR;
     return -1;
   }
-
-  // Get the directory structure
-  directory_t *dir = &node->type.directory;
 
   // Check that directory have more than ".", ".." nodes inside
-  if (dir->max_children == 1) {
+  directory_t *dict = &node->type.directory;
+  if (dict->max_children == 1) {
     return 0;
   }
 
-  // Get the children array
-  __myfs_off_t *children_offsets = off_to_ptr(fsptr, dir->children);
-  size_t num_children = dir->max_children;
+  size_t n_children = dict->max_children;
+  // Allocate space for all children, except "." and ".."
+  void **ptr = (void **)calloc(n_children - ((size_t)1), sizeof(char *));
+  __myfs_off_t *children = off_to_ptr(fsptr, dict->children);
 
-  // Filter out `.` and `..` entries and count remaining valid entries
-  size_t valid_entries = 0;
-  for (size_t i = 0; i < num_children; i++) {
-    node_t *child = off_to_ptr(fsptr, children_offsets[i]);
-    if (strcmp(child->name, ".") != 0 && strcmp(child->name, "..") != 0) {
-      valid_entries++;
-    }
-  }
-
-  // If no valid entries, return 0
-  if (valid_entries == 0) {
-    *namesptr = NULL;
-    return 0;
-  }
-
-  // Allocate memory for the array of names
-  char **names = calloc(valid_entries, sizeof(char *));
-  if (names == NULL) {
-    *errnoptr = EINVAL; // Memory allocation failure
+  // Check that calloc call was successful
+  if (ptr == NULL) {
+    *errnoptr = EINVAL;
     return -1;
   }
 
-  // Populate the names array with valid entries
-  size_t index = 0;
-  for (size_t i = 0; i < num_children; i++) {
-    node_t *child = off_to_ptr(fsptr, children_offsets[i]);
-    if (strcmp(child->name, ".") != 0 && strcmp(child->name, "..") != 0) {
-      // Allocate memory for the name and copy it
-      size_t name_length = strlen(child->name) + 1;
-      names[index] = calloc(name_length, sizeof(char));
-      if (names[index] == NULL) {
-        // Free previously allocated memory and return error
-        for (size_t j = 0; j < index; j++) {
-          free(names[j]);
-        }
-        free(names);
-        *errnoptr = EINVAL;
-        return -1;
-      }
-      strncpy(names[index], child->name, name_length);
-      index++;
-    }
+  char **names = ((char **)ptr);
+  // Fill array of names
+  size_t len;
+  for (size_t i = ((size_t)1); i < n_children; i++) {
+    node = ((node_t *)off_to_ptr(fsptr, children[i]));
+    len = strlen(node->name);
+    names[i - 1] = (char *)malloc(len + 1);
+    strcpy(names[i - 1], node->name);  // strcpy(dst,src)
+    names[i - 1][len] = '\0';
   }
 
-  // Set the output pointer and return the number of valid entries
   *namesptr = names;
-  return valid_entries;
+  return ((int)(n_children - 1));
 }
 
 /* Implements an emulation of the mknod system call for regular files
