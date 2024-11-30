@@ -1274,12 +1274,12 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
   // Populate fields based on node type
   if (node->is_file) {
     // File-specific attributes
-    stbuf->st_mode = S_IFREG;
+    stbuf->st_mode = S_IFREG | 0755; // Regular file with 0755 permissions
     stbuf->st_nlink = ((nlink_t)1);            // Files have 1 link
     stbuf->st_size = ((off_t)node->type.file.total_size); // File size
   } else {
     // Directory-specific attributes
-    stbuf->st_mode = S_IFDIR;
+    stbuf->st_mode = S_IFDIR | 0755; // Directory with 0755 permissions
 
     // Count the number of subdirectories, including `.` and `..`
     directory_t *dir = &node->type.directory;
