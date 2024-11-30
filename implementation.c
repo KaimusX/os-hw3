@@ -261,7 +261,7 @@ typedef struct {
 } file_t;
 
 typedef struct {
-  size_t number_children;
+  size_t max_children;
   __myfs_off_t children;
 } directory_t;
 
@@ -278,7 +278,7 @@ typedef struct {
 
 //// STRUCTS END
 
-//// 
+//// MEMORY ALLOCATION IMPLEMENTATION 
 
 /* Add a new allocation to the list in ascending order, merging adjacent spaces if possible */
 void add_allocation_space(void *fsptr, list_node_t *LL, allocated_node_t *alloc) {
@@ -550,7 +550,7 @@ void __free_impl(void *fsptr, void *ptr) {
                          (char *)ptr - sizeof(size_t));
 }
 
-///////////// END OF MEMORY ALLOCATION IMPLEMENTATION////////////////
+///////////// END OF MEMORY ALLOCATION IMPLEMENTATION 
 
 
 /* Convert an offset to a pointer relative to the base address */
@@ -619,7 +619,7 @@ void initial_check(void *fsptr, size_t fssize) {
 
         // Initialize root directory structure
         directory_t *dir = &root->type.directory;
-        dir->number_children = 1;                  // Reserve first slot for ".."
+        dir->max_children = 1;                  // Reserve first slot for ".."
 
         // Allocate space for root directory's children
         size_t *children_size = off_to_ptr(fsptr, handle->root_dir + sizeof(node_t));
@@ -747,7 +747,7 @@ node_t *get_node(void *fsptr, directory_t *dict, const char *child) {
         return NULL;  // Return NULL if directory or child is NULL
     }
 
-    size_t n_children = dict->number_children;
+    size_t n_children = dict->max_children;
     __myfs_off_t *children = off_to_ptr(fsptr, dict->children);
     node_t *node = NULL;
 
@@ -872,7 +872,7 @@ node_t *make_inode(void *fsptr, const char *path, int *errnoptr, int isfile) {
     size_t ask_size;
 
     // If no space, request more space for children
-    if (max_children == dict->number_children) {
+    if (max_children == dict->max_children) {
         ask_size = block->remaining * 2;
         void *new_children = __realloc_impl(fsptr, children, &ask_size);
 
@@ -902,8 +902,8 @@ node_t *make_inode(void *fsptr, const char *path, int *errnoptr, int isfile) {
     update_time(new_node, 1);
 
     // Add the new node to the parent's children list
-    children[dict->number_children] = ptr_to_off(fsptr, new_node);
-    dict->number_children++;
+    children[dict->max_children] = ptr_to_off(fsptr, new_node);
+    dict->max_children++;
     update_time(parent_node, 1);
 
     // If creating a file
@@ -915,7 +915,7 @@ node_t *make_inode(void *fsptr, const char *path, int *errnoptr, int isfile) {
     } else {  // If creating a directory
         new_node->is_file = 0;
         dict = &new_node->type.directory;
-        dict->number_children = (size_t)1;  // Use the first child for ".."
+        dict->max_children = (size_t)1;  // Use the first child for ".."
 
         // Allocate space for 4 children in the new directory
         ask_size = 4 * sizeof(__myfs_off_t);
@@ -969,7 +969,7 @@ void free_file_info(void *fsptr, file_t *file) {
  * attempts to free memory by reducing the size of the children array if possible.
  */
 void remove_node(void *fsptr, directory_t *dict, node_t *node) {
-    size_t n_children = dict->number_children;
+    size_t n_children = dict->max_children;
     __myfs_off_t *children = off_to_ptr(fsptr, dict->children);
     size_t index;
     __myfs_off_t node_off = ptr_to_off(fsptr, node);
@@ -991,7 +991,7 @@ void remove_node(void *fsptr, directory_t *dict, node_t *node) {
 
     // Set the last slot to zero and update the number of children
     children[index] = (__myfs_off_t)0;
-    dict->number_children--;
+    dict->max_children--;
 
     // Try to reduce the size of the children array by half while ensuring there are
     // at least 4 child slots available and space for an allocated_node_t object
@@ -1000,7 +1000,7 @@ void remove_node(void *fsptr, directory_t *dict, node_t *node) {
 
     // Check if the new number of children is sufficient, while also ensuring there is
     // enough space for at least 4 children and an allocated_node_t structure
-    if ((new_n_children >= dict->number_children) &&
+    if ((new_n_children >= dict->max_children) &&
         (new_n_children * sizeof(__myfs_off_t) >= sizeof(allocated_node_t)) &&
         (new_n_children >= 4)) {
 
@@ -1286,7 +1286,7 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
     stbuf->st_nlink = 2; // Start with `.` and `..`
     if (dir->children != 0) {
       __myfs_off_t *children_offsets = off_to_ptr(fsptr, dir->children);
-      size_t num_children = dir->number_children;
+      size_t num_children = dir->max_children;
 
       for (size_t i = 0; i < num_children; i++) {
         node_t *child = off_to_ptr(fsptr, children_offsets[i]);
@@ -1368,13 +1368,13 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
   directory_t *dir = &node->type.directory;
 
   // Check that directory have more than ".", ".." nodes inside
-  if (dir->number_children == 1) {
+  if (dir->max_children == 1) {
     return 0;
   }
 
   // Get the children array
   __myfs_off_t *children_offsets = off_to_ptr(fsptr, dir->children);
-  size_t num_children = dir->number_children;
+  size_t num_children = dir->max_children;
 
   // Filter out `.` and `..` entries and count remaining valid entries
   size_t valid_entries = 0;
@@ -1567,7 +1567,7 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 
   // Ensure the directory is empty (excluding "." and "..")
   directory_t *dir = &dir_node->type.directory;
-  if (dir->number_children > 0) {
+  if (dir->max_children > 0) {
     *errnoptr = ENOTEMPTY; // Directory is not empty
     return -1;
   }
