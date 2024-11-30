@@ -695,7 +695,7 @@ char **tokenize(const char token, const char *path, int skip_n_tokens) {
   // Do not tokenize the last skip_n_tokens
   n_tokens -= skip_n_tokens;
 
-  char **tokens = (char **)malloc(((u_int)(n_tokens + 1)) * sizeof(char *));
+  char **tokens = (char **)malloc(((unsigned int)(n_tokens + 1)) * sizeof(char *));
   const char *start = &path[1];  // Jump the first character which is '\'
   const char *end = start;
   char *t;
@@ -706,7 +706,7 @@ char **tokenize(const char token, const char *path, int skip_n_tokens) {
       end++;
     }
     // Make space for the token
-    t = (char *)malloc((((u_int)(end - start)) + ((u_int)1)) * sizeof(char));
+    t = (char *)malloc((((unsigned int)(end - start)) + ((unsigned int)1)) * sizeof(char));
     // Copy token
     memcpy(t, start, ((size_t)(end - start)));
     t[end - start] = '\0';
