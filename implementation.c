@@ -1252,56 +1252,51 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
                           uid_t uid, gid_t gid,
                           const char *path, struct stat *stbuf) {
   // Validate filesystem pointer and size
-  initial_check(fsptr, fssize); 
+    initial_check(fsptr, fssize);
 
-  // Validate path
-  if (path == NULL || strlen(path) == 0) {
-    *errnoptr = ENOENT; // Path does not exist
-    return -1;
-  }
-
-  // Locate the file or directory node
-  node_t *node = path_solver(fsptr, path, 0);
-  if (node == NULL) {
-    *errnoptr = ENOENT; // File or directory not found
-    return -1;
-  }
-
-  // Set UID and GID
-  stbuf->st_uid = uid;
-  stbuf->st_gid = gid;
-
-  // Populate fields based on node type
-  if (node->is_file) {
-    // File-specific attributes
-    stbuf->st_mode = S_IFREG | 0755; // Regular file with 0755 permissions
-    stbuf->st_nlink = ((nlink_t)1);            // Files have 1 link
-    stbuf->st_size = ((off_t)node->type.file.total_size); // File size
-  } else {
-    // Directory-specific attributes
-    stbuf->st_mode = S_IFDIR | 0755; // Directory with 0755 permissions
-
-    // Count the number of subdirectories, including `.` and `..`
-    directory_t *dir = &node->type.directory;
-    stbuf->st_nlink = 2; // Start with `.` and `..`
-    if (dir->children != 0) {
-      __myfs_off_t *children_offsets = off_to_ptr(fsptr, dir->children);
-      size_t num_children = dir->max_children;
-
-      for (size_t i = 0; i < num_children; i++) {
-        node_t *child = off_to_ptr(fsptr, children_offsets[i]);
-        if (!child->is_file) {
-          stbuf->st_nlink++; // Increment for each subdirectory
-        }
-      }
+    // Validate path
+    if (path == NULL || strlen(path) == 0) {
+        *errnoptr = ENOENT; // Path does not exist
+        return -1;
     }
-  }
 
-  // Set access and modification times
-  stbuf->st_atim = node->times[0]; // Last access time
-  stbuf->st_mtim = node->times[1]; // Last modification time
+    // Locate the file or directory node
+    node_t *node = path_solver(fsptr, path, 0);
+    if (node == NULL) {
+        *errnoptr = ENOENT; // File or directory not found
+        return -1;
+    }
 
-  return 0; // Success
+    // Set UID and GID
+    stbuf->st_uid = uid;
+    stbuf->st_gid = gid;
+
+    if (node->is_file) {
+        // File-specific attributes
+        stbuf->st_mode = S_IFREG | 0755; // Regular file
+        stbuf->st_nlink = 1;            // Files have 1 link
+        stbuf->st_size = (off_t)node->type.file.total_size;
+    } else {
+        // Directory-specific attributes
+        stbuf->st_mode = S_IFDIR | 0755; // Directory
+        stbuf->st_nlink = 2; // Include `.` and `..`
+        directory_t *dir = &node->type.directory;
+        for (size_t i = 1; i < dir->max_children; i++) {
+            node_t *child = off_to_ptr(fsptr, dir->children + i);
+            if (child && !child->is_file) {
+                stbuf->st_nlink++;
+            }
+        }
+    }
+
+    // Set timestamps
+    stbuf->st_atim = node->times[0]; // Last access time
+    stbuf->st_mtim = node->times[1]; // Last modification time
+
+    // Calculate blocks (512 bytes per block)
+    stbuf->st_blocks = (stbuf->st_size + 511) / 512;
+
+    return 0; // Success
 }
 
 /* Implements an emulation of the readdir system call on the filesystem 
@@ -1344,50 +1339,46 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, char ***namesptr) {
   initial_check(fsptr, fssize);
 
-  node_t *node = path_solver(fsptr, path, 0);
+    // Locate the directory node
+    node_t *node = path_solver(fsptr, path, 0);
+    if (node == NULL || node->is_file) {
+        *errnoptr = ENOTDIR; // Not a directory
+        return -1;
+    }
 
-  // Path could not be solved
-  if (node == NULL) {
-    *errnoptr = ENOENT;
-    return -1;
-  }
+    directory_t *dir = &node->type.directory;
 
-  // Check that the node is a directory
-  if (node->is_file) {
-    *errnoptr = ENOTDIR;
-    return -1;
-  }
+    if (dir->max_children <= 1) {
+        return 0; // No entries besides `.` and `..`
+    }
 
-  // Check that directory have more than ".", ".." nodes inside
-  directory_t *dict = &node->type.directory;
-  if (dict->max_children == 1) {
-    return 0;
-  }
+    // Allocate memory for names
+    size_t n_entries = dir->max_children - 1;
+    char **names = calloc(n_entries, sizeof(char *));
+    if (names == NULL) {
+        *errnoptr = ENOMEM; // Memory allocation failure
+        return -1;
+    }
 
-  size_t n_children = dict->max_children;
-  // Allocate space for all children, except "." and ".."
-  void **ptr = (void **)calloc(n_children - ((size_t)1), sizeof(char *));
-  __myfs_off_t *children = off_to_ptr(fsptr, dict->children);
+    __myfs_off_t *children = off_to_ptr(fsptr, dir->children);
 
-  // Check that calloc call was successful
-  if (ptr == NULL) {
-    *errnoptr = EINVAL;
-    return -1;
-  }
+    // Fill the names array
+    size_t count = 0;
+    for (size_t i = 1; i < dir->max_children; i++) {
+        node_t *child = off_to_ptr(fsptr, children[i]);
+        if (child == NULL) {
+            continue; // Skip invalid entries
+        }
+        names[count] = strdup(child->name);
+        if (names[count] == NULL) {
+            *errnoptr = ENOMEM; // Memory allocation failure
+            return -1;
+        }
+        count++;
+    }
 
-  char **names = ((char **)ptr);
-  // Fill array of names
-  size_t len;
-  for (size_t i = ((size_t)1); i < n_children; i++) {
-    node = ((node_t *)off_to_ptr(fsptr, children[i]));
-    len = strlen(node->name);
-    names[i - 1] = (char *)malloc(len + 1);
-    strcpy(names[i - 1], node->name);  // strcpy(dst,src)
-    names[i - 1][len] = '\0';
-  }
-
-  *namesptr = names;
-  return ((int)(n_children - 1));
+    *namesptr = names;
+    return (int)count; // Return the number of entries
 }
 
 /* Implements an emulation of the mknod system call for regular files
@@ -1446,36 +1437,39 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
     return -1;
   }
 
-  // Locate the node for the file to delete
-  node_t *node = path_solver(fsptr, path, 1);
-  if (node == NULL) {
+  // Locate the parent directory of the file
+  node_t *parent_node = path_solver(fsptr, path, 1);
+  if (parent_node == NULL) {
+    *errnoptr = ENOENT; // Parent directory does not exist
+    return -1;
+  }
+
+  // Ensure the parent node is a directory
+  if (parent_node->is_file) {
+    *errnoptr = ENOTDIR; // Parent is not a directory
+    return -1;
+  }
+
+  // Extract the filename from the path
+  unsigned long len;
+  char *filename = get_last_token(path, &len);
+  if (filename == NULL || len == 0) {
+    *errnoptr = EINVAL; // Invalid filename
+    return -1;
+  }
+
+  // Locate the file node within the parent directory
+  directory_t *dict = &parent_node->type.directory;
+  node_t *file_node = get_node(fsptr, dict, filename);
+  free(filename); // Clean up dynamically allocated memory
+  if (file_node == NULL) {
     *errnoptr = ENOENT; // File does not exist
     return -1;
   }
 
-  // Check if the node is a regular file
-  if (node->is_file) {
-    *errnoptr = ENOTDIR; // Cannot unlink a directory
-    return -1;
-  }
-
-  // Get directory from node
-  directory_t *dict = &node->type.directory;
-
-  // Get last token which have the filename
-  unsigned long len;
-  char *filename = get_last_token(path, &len);
-
-  // Check that the parent does not contain a node with the same name as the one we are about to create
-  node_t *file_node = get_node(fsptr, dict, filename);
-  if (file_node == NULL) {
-    *errnoptr = ENOENT;
-    return -1;
-  }
-
-  // Check that file_node is actually a file
+  // Ensure the node is a regular file
   if (!file_node->is_file) {
-    *errnoptr = EISDIR; // Path given lead to a directory not a file
+    *errnoptr = EISDIR; // Cannot unlink a directory
     return -1;
   }
 
@@ -1485,7 +1479,7 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
     free_file_info(fsptr, file);
   }
 
-  // Remove file_node from parent directory
+  // Remove the file node from the parent directory
   remove_node(fsptr, dict, file_node);
 
   return 0; // Success
@@ -1545,6 +1539,8 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
   __free_impl(fsptr, children);
   remove_node(fsptr, &parent_node->type.directory, dir_node);
 
+  update_time(parent_node, 1); // Update parent directory modification time
+
   return 0; // Success
 }
 
@@ -1592,13 +1588,105 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                          const char *from, const char *to) {
-  // Check if filesystem is valid
+  // Validate the filesystem pointer and size
   initial_check(fsptr, fssize);
 
-  // DO WORK
-  
+  // Validate the paths
+  if (from == NULL || strlen(from) == 0 || to == NULL || strlen(to) == 0) {
+    *errnoptr = EINVAL; // Invalid paths
+    return -1;
+  }
 
-  return -1; // Success
+  // Locate the source node and its parent
+  node_t *source_parent = path_solver(fsptr, from, 1);
+  if (source_parent == NULL) {
+    *errnoptr = ENOENT; // Source parent directory does not exist
+    return -1;
+  }
+
+  if (source_parent->is_file) {
+    *errnoptr = ENOTDIR; // Source parent is not a directory
+    return -1;
+  }
+
+  // Extract the source filename
+  unsigned long src_len;
+  char *src_filename = get_last_token(from, &src_len);
+  if (src_filename == NULL || src_len == 0) {
+    *errnoptr = EINVAL; // Invalid source filename
+    return -1;
+  }
+
+  // Locate the source node
+  directory_t *source_dir = &source_parent->type.directory;
+  node_t *source_node = get_node(fsptr, source_dir, src_filename);
+  if (source_node == NULL) {
+    free(src_filename);
+    *errnoptr = ENOENT; // Source file or directory does not exist
+    return -1;
+  }
+
+  // Locate the destination parent directory
+  node_t *dest_parent = path_solver(fsptr, to, 1);
+  if (dest_parent == NULL) {
+    free(src_filename);
+    *errnoptr = ENOENT; // Destination parent directory does not exist
+    return -1;
+  }
+
+  if (dest_parent->is_file) {
+    free(src_filename);
+    *errnoptr = ENOTDIR; // Destination parent is not a directory
+    return -1;
+  }
+
+  // Extract the destination filename
+  unsigned long dest_len;
+  char *dest_filename = get_last_token(to, &dest_len);
+  if (dest_filename == NULL || dest_len == 0) {
+    free(src_filename);
+    *errnoptr = EINVAL; // Invalid destination filename
+    return -1;
+  }
+
+  // Check if a node with the destination name already exists
+  directory_t *dest_dir = &dest_parent->type.directory;
+  node_t *existing_node = get_node(fsptr, dest_dir, dest_filename);
+  if (existing_node != NULL) {
+    free(src_filename);
+    free(dest_filename);
+
+    // If the destination is a directory, ensure it's empty before replacing
+    if (!existing_node->is_file) {
+      directory_t *existing_dir = &existing_node->type.directory;
+      if (existing_dir->max_children > 1) {
+        *errnoptr = ENOTEMPTY; // Cannot overwrite a non-empty directory
+        return -1;
+      }
+    }
+
+    // Remove the existing destination node
+    remove_node(fsptr, dest_dir, existing_node);
+  }
+
+  // Update the source node's name
+  memset(source_node->name, '\0', sizeof(source_node->name));
+  strncpy(source_node->name, dest_filename, dest_len);
+
+  // Move the source node to the destination directory
+  remove_node(fsptr, source_dir, source_node);
+  __myfs_off_t *dest_children = off_to_ptr(fsptr, dest_dir->children);
+  dest_children[dest_dir->max_children++] = ptr_to_off(fsptr, source_node);
+
+  // Update timestamps for the parent directories
+  update_time(source_parent, 1);
+  update_time(dest_parent, 1);
+
+  // Clean up
+  free(src_filename);
+  free(dest_filename);
+
+  return 0; // Success
 }
 
 /* Implements an emulation of the truncate system call on the filesystem 
@@ -1708,23 +1796,24 @@ int __myfs_open_implem(void *fsptr, size_t fssize, int *errnoptr,
   // Ensure the filesystem is initialized and valid
   initial_check(fsptr, fssize);
 
-  // Validate the input path
   if (path == NULL || strlen(path) == 0) {
-    *errnoptr = ENOENT; // No such file or directory
-    return -1;
+      *errnoptr = ENOENT; // Invalid path
+      return -1;
   }
 
-  // Resolve the path to locate the corresponding node
+  // Locate the node
   node_t *node = path_solver(fsptr, path, 0);
-
-  // If the path is invalid or doesn't exist
   if (node == NULL) {
-    *errnoptr = ENOENT; // No such file or directory
-    return -1;
+      *errnoptr = ENOENT; // File or directory does not exist
+      return -1;
   }
 
-  // If we reach here, the file or directory exists and is accessible
-  return 0;
+  if (!node->is_file) {
+      *errnoptr = EISDIR; // Cannot open a directory
+      return -1;
+  }
+
+  return 0; // Success
 }
 
 /* Implements an emulation of the read system call on the filesystem 
@@ -1744,90 +1833,64 @@ int __myfs_open_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
                        const char *path, char *buf, size_t size, off_t offset) {
-  // Validate filesystem pointer and size
   initial_check(fsptr, fssize);
 
-  if (offset < 0) {
-    *errnoptr = EFAULT;
-    return -1;
-  }
-
-  // Validate path
-  if (path == NULL || strlen(path) == 0) {
-    *errnoptr = ENOENT; // Invalid or non-existent path
-    return -1;
-  }
-
-  // Validate buffer
-  if (buf == NULL || size == 0) {
-    *errnoptr = EFAULT; // Invalid argument
-    return -1;
-  }
-
-  // Locate the file node
-  node_t *node = path_solver(fsptr, path, 0);
-  if (node == NULL) {
-    *errnoptr = ENOENT; // File not found
-    return -1;
-  }
-
-  // Ensure the node represents a file
-  if (!node->is_file) {
-    *errnoptr = EISDIR; // Path refers to a directory
-    return -1;
-  }
-
-  file_t *file = &node->type.file;
-
-  // If offset is beyond the file size
-  if ((size_t)offset > file->total_size) {
-    *errnoptr = EFAULT;
-    return -1;
-  }
-
-  if (file->total_size == 0) {
-    return 0;
-  }
-
-  // Determine the number of bytes to read, ensuring not to exceed file size
-  size_t bytes_to_read = (offset + size > file->total_size) ? file->total_size - (size_t)offset : size;
-
-  // Find the file block corresponding to the offset
-  myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
-  size_t block_offset = 0;
-  size_t read_offset = (size_t)offset;
-
-  // Traverse to the block containing the starting offset
-  while (read_offset >= block->size) {
-    read_offset -= block->size;
-    block = off_to_ptr(fsptr, block->next_file_block);
-    if (block == NULL) {
-      *errnoptr = EFAULT; // Corrupted filesystem
-      return -1;
+    // Validate inputs
+    if (offset < 0 || path == NULL || buf == NULL || size == 0) {
+        *errnoptr = EINVAL;
+        return -1;
     }
-  }
 
-  // Read data into the buffer
-  size_t bytes_read = 0;
-  while (bytes_to_read > 0 && block != NULL) {
-    // Determine the amount to read from the current block
-    size_t read_from_block = (read_offset + bytes_to_read > block->size) ? block->size - read_offset : bytes_to_read;
+    // Locate the file node
+    node_t *node = path_solver(fsptr, path, 0);
+    if (node == NULL) {
+        *errnoptr = ENOENT; // File not found
+        return -1;
+    }
 
-    // Copy data from the block to the buffer
-    char *block_data = (char *)off_to_ptr(fsptr, block->data);
-    memcpy(buf + bytes_read, block_data + read_offset, read_from_block);
+    if (!node->is_file) {
+        *errnoptr = EISDIR; // Path refers to a directory
+        return -1;
+    }
 
-    // Update counters and pointers
-    bytes_read += read_from_block;
-    bytes_to_read -= read_from_block;
-    read_offset = 0; // Subsequent blocks are read from the start
-    block = off_to_ptr(fsptr, block->next_file_block);
-  }
+    file_t *file = &node->type.file;
 
-  // Update the last access time of the file
-  update_time(node, 0); 
+    // Handle offset beyond file size
+    if ((size_t)offset >= file->total_size) {
+        return 0; // EOF
+    }
 
-  return bytes_read;
+    // Determine bytes to read
+    size_t bytes_to_read = (offset + size > file->total_size) ? file->total_size - (size_t)offset : size;
+
+    // Find the starting block
+    myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
+    size_t block_offset = 0;
+    size_t read_offset = (size_t)offset;
+
+    while (read_offset >= block->size) {
+        read_offset -= block->size;
+        block = off_to_ptr(fsptr, block->next_file_block);
+        if (block == NULL) {
+            *errnoptr = EFAULT; // Corrupted filesystem
+            return -1;
+        }
+    }
+
+    // Read data into the buffer
+    size_t bytes_read = 0;
+    while (bytes_to_read > 0 && block != NULL) {
+        size_t read_from_block = (read_offset + bytes_to_read > block->size) ? block->size - read_offset : bytes_to_read;
+        memcpy(buf + bytes_read, off_to_ptr(fsptr, block->data) + read_offset, read_from_block);
+
+        bytes_read += read_from_block;
+        bytes_to_read -= read_from_block;
+        read_offset = 0; // Subsequent blocks are read from the start
+        block = off_to_ptr(fsptr, block->next_file_block);
+    }
+
+    update_time(node, 0); // Update access time
+    return bytes_read;
 }
 
 /* Implements an emulation of the write system call on the filesystem 
@@ -1848,90 +1911,72 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
 int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path, const char *buf, size_t size, off_t offset) {
   // Validate filesystem pointer and size
-  initial_check(fsptr, fssize); 
+  initial_check(fsptr, fssize);
 
-  if (offset < 0) {
-    *errnoptr = EFAULT;
-    return -1;
-  }
-
-  // Validate path
-  if (path == NULL || strlen(path) == 0) {
-    *errnoptr = ENOENT; // Invalid or non-existent path
-    return -1;
-  }
-
-  // Validate buffer
-  if (buf == NULL || size == 0) {
-    *errnoptr = EINVAL; // Invalid argument
-    return -1;
-  }
-
-  // Locate the file node
-  node_t *node = path_solver(fsptr, path, 0);
-  if (node == NULL) {
-    *errnoptr = ENOENT; // File not found
-    return -1;
-  }
-
-  // Ensure the node represents a file
-  if (!node->is_file) {
-    *errnoptr = EISDIR; // Path refers to a directory
-    return -1;
-  }
-
-  // Check that the file have more bytes than the size_left so we don't have to iterate it
-  file_t *file = &node->type.file;
-  if (file->total_size < ((size_t)offset)) {
-    *errnoptr = EFBIG;
-    return -1;
-  }
-
-  // Calculate the total size after the write operation
-  size_t new_size = (size_t)offset + size;
-
-  // Extend the file if necessary
-  if (new_size > file->total_size) {
-    if (add_data(fsptr, file, new_size, errnoptr) != 0) {
-      return -1; // Failed to allocate new data blocks
+    // Validate inputs
+    if (offset < 0 || path == NULL || buf == NULL || size == 0) {
+        *errnoptr = EINVAL;
+        return -1;
     }
-    file->total_size = new_size; // Update the file size
-  }
 
-  // Locate the block where the write begins
-  myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
-  size_t write_offset = (size_t)offset;
-  while (write_offset >= block->size) {
-    write_offset -= block->size;
-    block = off_to_ptr(fsptr, block->next_file_block);
-    if (block == NULL) {
-      *errnoptr = EFAULT; // Corrupted filesystem
-      return -1;
+    // Locate the file node
+    node_t *node = path_solver(fsptr, path, 0);
+    if (node == NULL) {
+        *errnoptr = ENOENT;
+        return -1;
     }
-  }
 
-  // Write the data to the file blocks
-  size_t bytes_written = 0;
-  while (size > 0 && block != NULL) {
-    // Determine how much to write to the current block
-    size_t write_to_block = (write_offset + size > block->size) ? block->size - write_offset : size;
+    if (!node->is_file) {
+        *errnoptr = EISDIR;
+        return -1;
+    }
 
-    // Write data from the buffer to the block
-    char *block_data = (char *)off_to_ptr(fsptr, block->data);
-    memcpy(block_data + write_offset, buf + bytes_written, write_to_block);
+    file_t *file = &node->type.file;
 
-    // Update counters and pointers
-    bytes_written += write_to_block;
-    size -= write_to_block;
-    write_offset = 0; // Subsequent blocks are written from the start
-    block = off_to_ptr(fsptr, block->next_file_block);
-  }
+    // Handle offset beyond file size (create a gap with zeroes)
+    if ((size_t)offset > file->total_size) {
+        size_t gap_size = (size_t)offset - file->total_size;
+        if (add_data(fsptr, file, gap_size, errnoptr) != 0) {
+            return -1;
+        }
+    }
 
-  // Update the modification and access times of the file
-  update_time(node, 1); 
+    // Extend the file if needed
+    size_t new_size = (size_t)offset + size;
+    if (new_size > file->total_size) {
+        if (add_data(fsptr, file, new_size - file->total_size, errnoptr) != 0) {
+            return -1;
+        }
+        file->total_size = new_size;
+    }
 
-  return bytes_written;
+    // Locate the block for writing
+    myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
+    size_t write_offset = (size_t)offset;
 
+    while (write_offset >= block->size) {
+        write_offset -= block->size;
+        block = off_to_ptr(fsptr, block->next_file_block);
+        if (block == NULL) {
+            *errnoptr = EFAULT;
+            return -1;
+        }
+    }
+
+    // Write the data
+    size_t bytes_written = 0;
+    while (size > 0 && block != NULL) {
+        size_t write_to_block = (write_offset + size > block->size) ? block->size - write_offset : size;
+        memcpy(off_to_ptr(fsptr, block->data) + write_offset, buf + bytes_written, write_to_block);
+
+        bytes_written += write_to_block;
+        size -= write_to_block;
+        write_offset = 0; // Subsequent blocks are written from the start
+        block = off_to_ptr(fsptr, block->next_file_block);
+    }
+
+    update_time(node, 1); // Update modification time
+    return bytes_written;
 }
 
 /* Implements an emulation of the utimensat system call on the filesystem 
@@ -1999,32 +2044,29 @@ int __myfs_statfs_implem(void *fsptr, size_t fssize, int *errnoptr,
   // Ensure the filesystem is initialized and valid
   initial_check(fsptr, fssize);
 
-  // Ensure the stbuf pointer is valid
-  if (stbuf == NULL) {
-    *errnoptr = EINVAL; // Invalid argument
-    return -1;
-  }
+    // Retrieve filesystem metadata
+    myfs_handle_t *fs = (myfs_handle_t *)fsptr;
 
-  // Cast the handler to extract metadata from the filesystem
-  myfs_handle_t *handler = (myfs_handle_t *)fsptr;
+    // Validate filesystem handle
+    if (fs->magic != 0xcafebabe) {
+        *errnoptr = EFAULT; // Filesystem in bad state
+        return -1;
+    }
 
-  // Total number of blocks in the filesystem
-  stbuf->f_blocks = fssize / 1024;
+    // Calculate used and free space
+    size_t free_space = fs->size - (fs->free_memory - (size_t)fsptr);
+    size_t used_space = fs->size - free_space;
 
-  // Number of free blocks available
-  allocated_node_t *free_space = off_to_ptr(fsptr, handler->free_memory);
-  size_t free_memory_size = free_space->remaining;
-  stbuf->f_bfree = free_memory_size / 1024;
+    stbuf->f_bsize = 512;           // Block size
+    stbuf->f_frsize = 512;          // Fragment size
+    stbuf->f_blocks = fs->size / 512; // Total blocks
+    stbuf->f_bfree = free_space / 512; // Free blocks
+    stbuf->f_bavail = stbuf->f_bfree; // Free blocks for unprivileged users
+    stbuf->f_files = 0;             // Total inodes (not tracked)
+    stbuf->f_ffree = 0;             // Free inodes (not tracked)
+    stbuf->f_favail = 0;            // Free inodes for unprivileged users
+    stbuf->f_namemax = 255;         // Maximum filename length
 
-  // Number of available blocks (same as f_bfree in this case)
-  stbuf->f_bavail = stbuf->f_bfree;
-
-  // Filesystem block size
-  stbuf->f_bsize = 1024;
-
-  // Maximum file name length
-  stbuf->f_namemax = 255;
-
-  return 0;
+    return 0; // Success
 }
 
