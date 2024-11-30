@@ -1447,7 +1447,7 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
   }
 
   // Locate the node for the file to delete
-  node_t *node = path_solver(fsptr, path, 0);
+  node_t *node = path_solver(fsptr, path, 1);
   if (node == NULL) {
     *errnoptr = ENOENT; // File does not exist
     return -1;
