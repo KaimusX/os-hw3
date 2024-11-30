@@ -540,17 +540,14 @@ void *__realloc_impl(void *fsptr, void *orig_ptr, size_t *size) {
 
 /* Free allocated memory by returning it to the free list */
 void __free_impl(void *fsptr, void *ptr) {
-    myfs_handle_t *fs = (myfs_handle_t *)fsptr;
+    // No operation needed if ptr is NULL
+    if (ptr == NULL) {
+        return;
+    }
 
-    // Calculate the offset of the memory block being freed
-    __myfs_off_t block_offset = ptr_to_off(fsptr, ptr);
-
-    // Mark the block as free by adding it to the free list
-    list_node_t *LL = off_to_ptr(fsptr, fs->free_memory);
-    add_allocation_space(fsptr, LL, (allocated_node_t *)ptr);
-
-    // Update the free memory pointer in the filesystem
-    fs->free_memory = block_offset;
+    // Return the memory to the free list
+    add_allocation_space(fsptr, get_free_memory_ptr(fsptr), 
+                         (char *)ptr - sizeof(size_t));
 }
 
 ///////////// END OF MEMORY ALLOCATION IMPLEMENTATION 
@@ -558,10 +555,10 @@ void __free_impl(void *fsptr, void *ptr) {
 
 /* Convert an offset to a pointer relative to the base address */
 void *off_to_ptr(void *fsptr, __myfs_off_t offset) {
-    if (offset == 0) {
-        return NULL; // Null check for invalid offset
-    }
-    return (void *)((char *)fsptr + offset);
+    void *ptr = (char *)fsptr + offset;
+
+    // Ensure the resulting pointer doesn't wrap around
+    return (ptr < fsptr) ? NULL : ptr;
 }
 
 
@@ -569,7 +566,7 @@ void *off_to_ptr(void *fsptr, __myfs_off_t offset) {
 /* Convert a pointer to an offset relative to the base address */
 __myfs_off_t ptr_to_off(void *fsptr, void *ptr) {
     // Ensure the provided pointer is within valid range
-    return (__myfs_off_t)((char *)ptr - (char *)fsptr);
+    return (fsptr > ptr) ? 0 : (__myfs_off_t)((char *)ptr - (char *)fsptr);
 }
 
 
@@ -595,15 +592,7 @@ void update_time(node_t *node, int set_mod) {
 
 /* Retrieve the pointer to the free memory list in the handler */
 void *get_free_memory_ptr(void *fsptr) {
-    myfs_handle_t *fs = (myfs_handle_t *)fsptr;
-
-    // Check if there is free memory left in the filesystem
-    if (fs->free_memory > 0) {
-        void *free_ptr = off_to_ptr(fsptr, fs->free_memory);
-        fs->free_memory += sizeof(allocated_node_t); // Update free memory pointer
-        return free_ptr;
-    }
-    return NULL; // No free memory
+    return &((myfs_handle_t *)fsptr)->free_memory;
 }
 
 
