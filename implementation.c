@@ -546,8 +546,7 @@ void __free_impl(void *fsptr, void *ptr) {
     }
 
     // Return the memory to the free list
-    add_allocation_space(fsptr, get_free_memory_ptr(fsptr), 
-                         (char *)ptr - sizeof(size_t));
+    add_allocation_space(fsptr, get_free_memory_ptr(fsptr), ptr - sizeof(size_t));
 }
 
 ///////////// END OF MEMORY ALLOCATION IMPLEMENTATION 
@@ -969,51 +968,46 @@ void free_file_info(void *fsptr, file_t *file) {
  * attempts to free memory by reducing the size of the children array if possible.
  */
 void remove_node(void *fsptr, directory_t *dict, node_t *node) {
-    size_t n_children = dict->max_children;
-    __myfs_off_t *children = off_to_ptr(fsptr, dict->children);
-    size_t index;
-    __myfs_off_t node_off = ptr_to_off(fsptr, node);
+  size_t n_children = dict->max_children;
+  __myfs_off_t *children = off_to_ptr(fsptr, dict->children);
+  size_t index;
+  __myfs_off_t node_off = ptr_to_off(fsptr, node);
 
-    // Find the index of the node to be removed in the children list
-    for (index = 1; index < n_children; index++) {
-        if (children[index] == node_off) {
-            break;
-        }
-    }
+  // Find the index of the node to be removed in the children list
+  for (index = 1; index < n_children; index++) {
+      if (children[index] == node_off) {
+          break;
+      }
+  }
 
-    // Free the node itself
-    __free_impl(fsptr, node);
+  // Free the node itself
+  __free_impl(fsptr, node);
 
-    // Shift the remaining nodes one position to the left to cover the removed node
-    for (; index < n_children - 1; index++) {
-        children[index] = children[index + 1];
-    }
+  // Shift the remaining nodes one position to the left to cover the removed node
+  for (; index < n_children - 1; index++) {
+      children[index] = children[index + 1];
+  }
 
-    // Set the last slot to zero and update the number of children
-    children[index] = (__myfs_off_t)0;
-    dict->max_children--;
+  // Set the last slot to zero and update the number of children
+  children[index] = (__myfs_off_t)0;
+  dict->max_children--;
 
-    // Try to reduce the size of the children array by half while ensuring there are
-    // at least 4 child slots available and space for an allocated_node_t object
-    size_t new_n_children = (*((size_t *)children) - 1) / sizeof(__myfs_off_t);
-    new_n_children <<= 1;  // Divide the available slots by 2
+  // Try to reduce the size of the children array by half while ensuring there are
+  // at least 4 child slots available and space for an allocated_node_t object
+  size_t new_n_children = (dict->max_children + 1) / 2;  // Halve the size, ensuring a minimum size
+  new_n_children = new_n_children > 4 ? new_n_children : 4;  // Ensure at least 4 slots
 
-    // Check if the new number of children is sufficient, while also ensuring there is
-    // enough space for at least 4 children and an allocated_node_t structure
-    if ((new_n_children >= dict->max_children) &&
-        (new_n_children * sizeof(__myfs_off_t) >= sizeof(allocated_node_t)) &&
-        (new_n_children >= 4)) {
+  // Check if we can shrink the size
+  if (new_n_children != n_children) {
+      // Shrink the children array to fit
+      size_t new_size = new_n_children * sizeof(__myfs_off_t);
+      void *new_children = __malloc_impl(fsptr, children, &new_size);
 
-        // Proceed to create an AllocateFrom structure and add it to the list of free blocks
-        allocated_node_t *temp = (allocated_node_t *)&children[new_n_children];
-        temp->remaining = new_n_children * sizeof(__myfs_off_t) - sizeof(size_t);
-        temp->next_space = 0;
-        __free_impl(fsptr, temp);
-
-        // Update the size of the current directory's children array
-        size_t *new_size = (size_t *)(children - 1);
-        *new_size -= (temp->remaining - sizeof(size_t));
-    }
+      if (new_children != NULL) {
+          // Update the children pointer with the new size
+          dict->children = ptr_to_off(fsptr, new_children);
+      }
+  }
 }
 
 
@@ -1865,7 +1859,6 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
 
     // Find the starting block
     myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
-    size_t block_offset = 0;
     size_t read_offset = (size_t)offset;
 
     while (read_offset >= block->size) {
@@ -2055,7 +2048,6 @@ int __myfs_statfs_implem(void *fsptr, size_t fssize, int *errnoptr,
 
     // Calculate used and free space
     size_t free_space = fs->size - (fs->free_memory - (size_t)fsptr);
-    size_t used_space = fs->size - free_space;
 
     stbuf->f_bsize = 512;           // Block size
     stbuf->f_frsize = 512;          // Fragment size
