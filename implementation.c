@@ -1454,7 +1454,7 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
   }
 
   // Check if the node is a regular file
-  if (!node->is_file) {
+  if (node->is_file) {
     *errnoptr = ENOTDIR; // Cannot unlink a directory
     return -1;
   }
@@ -1525,14 +1525,14 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
   }
 
   // Check if the node is a directory
-  if (!dir_node->is_file) {
+  if (dir_node->is_file) {
     *errnoptr = ENOTDIR; // Path is not a directory
     return -1;
   }
 
-  // Ensure the directory is empty (excluding "." and "..")
+  // Ensure the directory is empty 
   directory_t *dir = &dir_node->type.directory;
-  if (dir->max_children > 0) {
+  if (dir->max_children > 1) {
     *errnoptr = ENOTEMPTY; // Directory is not empty
     return -1;
   }
