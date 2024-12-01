@@ -1,4 +1,16 @@
 #include <stddef.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdio.h>
+
 typedef size_t __myfs_off_t;
 
 typedef struct {
