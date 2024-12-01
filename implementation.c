@@ -790,9 +790,6 @@ node_t *path_solver(void *fsptr, const char *path, int skip_n_tokens) {
 
     // Tokenize the path by splitting on '/'
     char **tokens = tokenize('/', path, skip_n_tokens);
-    if (tokens == NULL) {
-        return NULL;  // Tokenization failure, return NULL
-    }
 
     // Iterate through each token in the path
     for (char **token = tokens; *token; token++) {
@@ -802,15 +799,22 @@ node_t *path_solver(void *fsptr, const char *path, int skip_n_tokens) {
             return NULL;
         }
 
-        // Retrieve the child node corresponding to the current token
-        node = get_node(fsptr, &node->type.directory, *token);
-        if (node == NULL) {
-            free_tokens(tokens);  // Clean up tokens before returning
-            return NULL;
+        // If the token is ".", stay in the current directory (no movement)
+        if (strcmp(*token, ".") != 0) {
+            // Retrieve the child node corresponding to the current token
+            node = get_node(fsptr, &node->type.directory, *token);
+            // Check if the node was found, return NULL if not
+            if (node == NULL) {
+                free_tokens(tokens);  // Clean up tokens before returning
+                return NULL;
+            }
         }
     }
 
-    free_tokens(tokens);  // Free tokens after use
+    // Clean up token array after use
+    free_tokens(tokens);
+
+    // Return the resolved node after processing all tokens
     return node;
 }
 
@@ -1073,30 +1077,31 @@ void remove_data(void *fsptr, myfs_file_block_t *block, size_t size) {
  */
 int add_data(void *fsptr, file_t *file, size_t size, int *errnoptr) {
     myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
+
+    // Auxiliary variables for managing blocks and sizes
     myfs_file_block_t *prev_temp_block = NULL;
     myfs_file_block_t *temp_block;
+    size_t new_data_block_size;
     size_t ask_size;
+    size_t append_n_bytes;
+    size_t initial_file_size = file->total_size;
     void *data_block;
 
-    // Handle empty file (first block creation)
+    // If the file is empty, create the first block manually
     if (((void *)block) == fsptr) {
         ask_size = sizeof(myfs_file_block_t);
         block = __malloc_impl(fsptr, NULL, &ask_size);
-        if (ask_size != 0 || block == NULL) {
+        if (ask_size != 0) {
             *errnoptr = ENOSPC;
-            return -1; // Allocation failure
+            return -1; // No space left to allocate the first block
         }
 
+        // Set the first file block and allocate data space
         file->first_file_block = ptr_to_off(fsptr, block);
         ask_size = size;
         data_block = __malloc_impl(fsptr, NULL, &ask_size);
 
-        if (ask_size != 0 || data_block == NULL) {
-            __free_impl(fsptr, block);  // Clean up partially allocated memory
-            *errnoptr = ENOSPC;
-            return -1; // Allocation failure
-        }
-
+        // Initialize block with size and data allocation
         block->size = size - ask_size;
         block->allocated = block->size;
         block->data = ptr_to_off(fsptr, data_block);
@@ -1104,27 +1109,105 @@ int add_data(void *fsptr, file_t *file, size_t size, int *errnoptr) {
 
         size -= block->size;
     }
-    // Handle file extension
+    // If the file is not empty, extend the last block by appending zeroes
     else {
-        // Handle allocation errors during block traversal or data addition
+        // Traverse blocks until the last one
         while (block->next_file_block != 0) {
             size -= block->allocated;
             block = off_to_ptr(fsptr, block->next_file_block);
         }
 
-        // More robust memory checks and handling
-        ask_size = size;
-        data_block = __malloc_impl(fsptr, block->data, &ask_size);
-        if (data_block == NULL) {
-            *errnoptr = ENOSPC;
-            return -1; // Allocation failure
-        }
+        // Calculate how many zeroes to append to the last block
+        append_n_bytes = (block->size - block->allocated) > size
+                             ? size
+                             : (block->size - block->allocated);
+        data_block = &((char *)off_to_ptr(fsptr, block->data))[block->allocated];
 
-        block->allocated += ask_size;
-        size -= ask_size;
+        // Append zeroes to the last block
+        memset(data_block, 0, append_n_bytes);
+        block->allocated += append_n_bytes;
+        size -= append_n_bytes;
     }
 
-    return 0; // Success
+    // If no more data is left to add, return early
+    if (size == 0) {
+        return 0;
+    }
+
+    // Otherwise, allocate new blocks until the required size is met
+    size_t prev_size = block->allocated;
+    ask_size = size;
+    data_block = ((char *)off_to_ptr(fsptr, block->data));
+    void *new_data_block = __malloc_impl(fsptr, data_block, &ask_size);
+    block->size = *(((size_t *)data_block) - 1);  // Update the block's total size
+
+    // Check if allocation failed or if the requested size exceeds available space
+    if (new_data_block == NULL) {
+        if (ask_size != 0) {
+            *errnoptr = ENOSPC;
+            return -1; // No space available for new block
+        } else {
+            // If allocation size is zero, extend the existing block with zeroes
+            append_n_bytes = (block->size - block->allocated >= size
+                                ? size
+                                : block->size - block->allocated);
+            memset(&((char *)off_to_ptr(fsptr, block->data))[prev_size], 0,
+                   append_n_bytes);
+            block->allocated += append_n_bytes;
+            size = 0;
+        }
+    } else {
+        // Allocate and initialize new blocks until all data is added
+        append_n_bytes = block->size - block->allocated;
+        memset(&((char *)off_to_ptr(fsptr, block->data))[prev_size], 0,
+               append_n_bytes);
+        block->allocated += append_n_bytes;
+        size -= append_n_bytes;
+
+        temp_block = block;
+
+        // Allocate and chain new blocks until all data is added or fail
+        while (1) {
+            new_data_block_size = *(((size_t *)new_data_block) - 1);
+
+            // Link the previous block to the current block
+            if (prev_temp_block != NULL) {
+                prev_temp_block->next_file_block = ptr_to_off(fsptr, temp_block);
+            }
+
+            // Initialize the current block
+            temp_block->size = new_data_block_size;
+            temp_block->allocated = ask_size == 0 ? size : new_data_block_size;
+            temp_block->data = ptr_to_off(fsptr, new_data_block);
+            temp_block->next_file_block = 0;
+
+            memset(new_data_block, 0, temp_block->allocated);
+            size -= temp_block->allocated;
+
+            prev_temp_block = temp_block;
+
+            // If all data is added, exit the loop
+            if (size == 0) {
+                break;
+            }
+
+            // Allocate the next block of data
+            ask_size = size;
+            new_data_block = __malloc_impl(fsptr, NULL, &ask_size);
+            size_t temp_size = sizeof(myfs_file_block_t);
+            temp_block = __malloc_impl(fsptr, NULL, &temp_size);
+
+            // Ensure successful allocation, otherwise rollback and return error
+            if ((new_data_block == NULL) || (temp_block == NULL) || (temp_size != 0)) {
+                remove_data(fsptr, off_to_ptr(fsptr, file->first_file_block),
+                            initial_file_size);
+                *errnoptr = ENOSPC;
+                return -1; // Failed to allocate enough space for the file
+            }
+        }
+    }
+
+    return 0; // Data successfully added to the file
 }
 
 
