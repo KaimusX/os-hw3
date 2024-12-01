@@ -1611,7 +1611,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
     return -1;
   }
 
-  // Locate the source node and its parent
+  // Locate the source parent directory
   node_t *source_parent = path_solver(fsptr, from, 1);
   if (source_parent == NULL) {
     *errnoptr = ENOENT; // Source parent directory does not exist
@@ -1681,6 +1681,13 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
 
     // Remove the existing destination node
     remove_node(fsptr, dest_dir, existing_node);
+  }
+
+  // If the source and destination are the same, return early
+  if (source_parent == dest_parent && strcmp(src_filename, dest_filename) == 0) {
+    free(src_filename);
+    free(dest_filename);
+    return 0; // No operation needed, source and destination are the same
   }
 
   // Update the source node's name
