@@ -1003,15 +1003,24 @@ void remove_node(void *fsptr, directory_t *dict, node_t *node) {
   children[index] = (__myfs_off_t)0;
   dict->max_children--;
 
+  // Avoid shrinking the children array if there's only 1 item or fewer left
+  // Do not shrink if there are less than 4 children or if there's only one child remaining
+  if (dict->max_children <= 4) {
+      return;  // No need to shrink the array if only a few items are left
+  }
+
   // Try to reduce the size of the children array by half while ensuring there are
   // at least 4 child slots available and space for an allocated_node_t object
-  size_t new_n_children = (dict->max_children + 1) / 2;  // Halve the size, ensuring a minimum size
-  new_n_children = new_n_children > 4 ? new_n_children : 4;  // Ensure at least 4 slots
+  size_t new_n_children = dict->max_children / 2;  // Halve the size
 
-  // Check if we can shrink the size
+  // Ensure at least 4 children slots
+  new_n_children = new_n_children >= 4 ? new_n_children : 4;
+
+  // Only reallocate if the size changes (no point shrinking below the minimum size)
   if (new_n_children != n_children) {
-      // Shrink the children array to fit
       size_t new_size = new_n_children * sizeof(__myfs_off_t);
+
+      // Reallocate the children array with the new size
       void *new_children = __malloc_impl(fsptr, children, &new_size);
 
       if (new_children != NULL) {
