@@ -790,6 +790,9 @@ node_t *path_solver(void *fsptr, const char *path, int skip_n_tokens) {
 
     // Tokenize the path by splitting on '/'
     char **tokens = tokenize('/', path, skip_n_tokens);
+    if (tokens == NULL) {
+        return NULL;  // Tokenization failure, return NULL
+    }
 
     // Iterate through each token in the path
     for (char **token = tokens; *token; token++) {
@@ -799,22 +802,15 @@ node_t *path_solver(void *fsptr, const char *path, int skip_n_tokens) {
             return NULL;
         }
 
-        // If the token is ".", stay in the current directory (no movement)
-        if (strcmp(*token, ".") != 0) {
-            // Retrieve the child node corresponding to the current token
-            node = get_node(fsptr, &node->type.directory, *token);
-            // Check if the node was found, return NULL if not
-            if (node == NULL) {
-                free_tokens(tokens);  // Clean up tokens before returning
-                return NULL;
-            }
+        // Retrieve the child node corresponding to the current token
+        node = get_node(fsptr, &node->type.directory, *token);
+        if (node == NULL) {
+            free_tokens(tokens);  // Clean up tokens before returning
+            return NULL;
         }
     }
 
-    // Clean up token array after use
-    free_tokens(tokens);
-
-    // Return the resolved node after processing all tokens
+    free_tokens(tokens);  // Free tokens after use
     return node;
 }
 
@@ -1077,31 +1073,30 @@ void remove_data(void *fsptr, myfs_file_block_t *block, size_t size) {
  */
 int add_data(void *fsptr, file_t *file, size_t size, int *errnoptr) {
     myfs_file_block_t *block = off_to_ptr(fsptr, file->first_file_block);
-
-    // Auxiliary variables for managing blocks and sizes
     myfs_file_block_t *prev_temp_block = NULL;
     myfs_file_block_t *temp_block;
-    size_t new_data_block_size;
     size_t ask_size;
-    size_t append_n_bytes;
-    size_t initial_file_size = file->total_size;
     void *data_block;
 
-    // If the file is empty, create the first block manually
+    // Handle empty file (first block creation)
     if (((void *)block) == fsptr) {
         ask_size = sizeof(myfs_file_block_t);
         block = __malloc_impl(fsptr, NULL, &ask_size);
-        if (ask_size != 0) {
+        if (ask_size != 0 || block == NULL) {
             *errnoptr = ENOSPC;
-            return -1; // No space left to allocate the first block
+            return -1; // Allocation failure
         }
 
-        // Set the first file block and allocate data space
         file->first_file_block = ptr_to_off(fsptr, block);
         ask_size = size;
         data_block = __malloc_impl(fsptr, NULL, &ask_size);
 
-        // Initialize block with size and data allocation
+        if (ask_size != 0 || data_block == NULL) {
+            __free_impl(fsptr, block);  // Clean up partially allocated memory
+            *errnoptr = ENOSPC;
+            return -1; // Allocation failure
+        }
+
         block->size = size - ask_size;
         block->allocated = block->size;
         block->data = ptr_to_off(fsptr, data_block);
@@ -1109,105 +1104,27 @@ int add_data(void *fsptr, file_t *file, size_t size, int *errnoptr) {
 
         size -= block->size;
     }
-    // If the file is not empty, extend the last block by appending zeroes
+    // Handle file extension
     else {
-        // Traverse blocks until the last one
+        // Handle allocation errors during block traversal or data addition
         while (block->next_file_block != 0) {
             size -= block->allocated;
             block = off_to_ptr(fsptr, block->next_file_block);
         }
 
-        // Calculate how many zeroes to append to the last block
-        append_n_bytes = (block->size - block->allocated) > size
-                             ? size
-                             : (block->size - block->allocated);
-        data_block = &((char *)off_to_ptr(fsptr, block->data))[block->allocated];
-
-        // Append zeroes to the last block
-        memset(data_block, 0, append_n_bytes);
-        block->allocated += append_n_bytes;
-        size -= append_n_bytes;
-    }
-
-    // If no more data is left to add, return early
-    if (size == 0) {
-        return 0;
-    }
-
-    // Otherwise, allocate new blocks until the required size is met
-    size_t prev_size = block->allocated;
-    ask_size = size;
-    data_block = ((char *)off_to_ptr(fsptr, block->data));
-    void *new_data_block = __malloc_impl(fsptr, data_block, &ask_size);
-    block->size = *(((size_t *)data_block) - 1);  // Update the block's total size
-
-    // Check if allocation failed or if the requested size exceeds available space
-    if (new_data_block == NULL) {
-        if (ask_size != 0) {
+        // More robust memory checks and handling
+        ask_size = size;
+        data_block = __malloc_impl(fsptr, block->data, &ask_size);
+        if (data_block == NULL) {
             *errnoptr = ENOSPC;
-            return -1; // No space available for new block
-        } else {
-            // If allocation size is zero, extend the existing block with zeroes
-            append_n_bytes = (block->size - block->allocated >= size
-                                ? size
-                                : block->size - block->allocated);
-            memset(&((char *)off_to_ptr(fsptr, block->data))[prev_size], 0,
-                   append_n_bytes);
-            block->allocated += append_n_bytes;
-            size = 0;
+            return -1; // Allocation failure
         }
-    } else {
-        // Allocate and initialize new blocks until all data is added
-        append_n_bytes = block->size - block->allocated;
-        memset(&((char *)off_to_ptr(fsptr, block->data))[prev_size], 0,
-               append_n_bytes);
-        block->allocated += append_n_bytes;
-        size -= append_n_bytes;
 
-        temp_block = block;
-
-        // Allocate and chain new blocks until all data is added or fail
-        while (1) {
-            new_data_block_size = *(((size_t *)new_data_block) - 1);
-
-            // Link the previous block to the current block
-            if (prev_temp_block != NULL) {
-                prev_temp_block->next_file_block = ptr_to_off(fsptr, temp_block);
-            }
-
-            // Initialize the current block
-            temp_block->size = new_data_block_size;
-            temp_block->allocated = ask_size == 0 ? size : new_data_block_size;
-            temp_block->data = ptr_to_off(fsptr, new_data_block);
-            temp_block->next_file_block = 0;
-
-            memset(new_data_block, 0, temp_block->allocated);
-            size -= temp_block->allocated;
-
-            prev_temp_block = temp_block;
-
-            // If all data is added, exit the loop
-            if (size == 0) {
-                break;
-            }
-
-            // Allocate the next block of data
-            ask_size = size;
-            new_data_block = __malloc_impl(fsptr, NULL, &ask_size);
-            size_t temp_size = sizeof(myfs_file_block_t);
-            temp_block = __malloc_impl(fsptr, NULL, &temp_size);
-
-            // Ensure successful allocation, otherwise rollback and return error
-            if ((new_data_block == NULL) || (temp_block == NULL) || (temp_size != 0)) {
-                remove_data(fsptr, off_to_ptr(fsptr, file->first_file_block),
-                            initial_file_size);
-                *errnoptr = ENOSPC;
-                return -1; // Failed to allocate enough space for the file
-            }
-        }
+        block->allocated += ask_size;
+        size -= ask_size;
     }
 
-    return 0; // Data successfully added to the file
+    return 0; // Success
 }
 
 
@@ -1423,60 +1340,54 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
 int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
   // Validate the filesystem pointer and size
-  initial_check(fsptr, fssize);
+    initial_check(fsptr, fssize);
 
-  // Validate the path
-  if (path == NULL || strlen(path) == 0) {
-    *errnoptr = EINVAL; // Invalid path
-    return -1;
-  }
+    // Validate the path
+    if (path == NULL || strlen(path) == 0) {
+        *errnoptr = EINVAL; // Invalid path
+        return -1;
+    }
 
-  // Locate the parent directory of the file
-  node_t *parent_node = path_solver(fsptr, path, 1);
-  if (parent_node == NULL) {
-    *errnoptr = ENOENT; // Parent directory does not exist
-    return -1;
-  }
+    // Locate the node for the file to delete
+    node_t *node = path_solver(fsptr, path, 0);
+    if (node == NULL) {
+        *errnoptr = ENOENT; // File does not exist
+        return -1;
+    }
 
-  // Ensure the parent node is a directory
-  if (parent_node->is_file) {
-    *errnoptr = ENOTDIR; // Parent is not a directory
-    return -1;
-  }
+    // Check if the node is a regular file
+    if (!node->is_file) {
+        *errnoptr = ENOTDIR; // Cannot unlink a directory
+        return -1;
+    }
 
-  // Extract the filename from the path
-  unsigned long len;
-  char *filename = get_last_token(path, &len);
-  if (filename == NULL || len == 0) {
-    *errnoptr = EINVAL; // Invalid filename
-    return -1;
-  }
+    // Proceed with file removal
+    directory_t *dict = &node->type.directory;
+    unsigned long len;
+    char *filename = get_last_token(path, &len);
 
-  // Locate the file node within the parent directory
-  directory_t *dict = &parent_node->type.directory;
-  node_t *file_node = get_node(fsptr, dict, filename);
-  free(filename); // Clean up dynamically allocated memory
-  if (file_node == NULL) {
-    *errnoptr = ENOENT; // File does not exist
-    return -1;
-  }
+    // Ensure no node with the same name exists in the parent directory
+    node_t *file_node = get_node(fsptr, dict, filename);
+    if (file_node == NULL) {
+        *errnoptr = ENOENT; // File does not exist
+        return -1;
+    }
 
-  // Ensure the node is a regular file
-  if (!file_node->is_file) {
-    *errnoptr = EISDIR; // Cannot unlink a directory
-    return -1;
-  }
+    // Validate the file type
+    if (!file_node->is_file) {
+        *errnoptr = EISDIR; // Path points to a directory
+        return -1;
+    }
 
-  // Free file information
-  file_t *file = &file_node->type.file;
-  if (file->total_size != 0) {
-    free_file_info(fsptr, file);
-  }
+    // Free the file information and remove the node
+    file_t *file = &file_node->type.file;
+    if (file->total_size != 0) {
+        free_file_info(fsptr, file);
+    }
 
-  // Remove the file node from the parent directory
-  remove_node(fsptr, dict, file_node);
-
-  return 0; // Success
+    // Remove the node from the parent directory
+    remove_node(fsptr, dict, file_node);
+    return 0; // Success
 }
 
 /* Implements an emulation of the rmdir system call on the filesystem 
