@@ -1340,54 +1340,60 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
 int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
   // Validate the filesystem pointer and size
-    initial_check(fsptr, fssize);
+  initial_check(fsptr, fssize);
 
-    // Validate the path
-    if (path == NULL || strlen(path) == 0) {
-        *errnoptr = EINVAL; // Invalid path
-        return -1;
-    }
+  // Validate the path
+  if (path == NULL || strlen(path) == 0) {
+    *errnoptr = EINVAL; // Invalid path
+    return -1;
+  }
 
-    // Locate the node for the file to delete
-    node_t *node = path_solver(fsptr, path, 0);
-    if (node == NULL) {
-        *errnoptr = ENOENT; // File does not exist
-        return -1;
-    }
+  // Locate the parent directory of the file
+  node_t *parent_node = path_solver(fsptr, path, 1);
+  if (parent_node == NULL) {
+    *errnoptr = ENOENT; // Parent directory does not exist
+    return -1;
+  }
 
-    // Check if the node is a regular file
-    if (!node->is_file) {
-        *errnoptr = ENOTDIR; // Cannot unlink a directory
-        return -1;
-    }
+  // Ensure the parent node is a directory
+  if (parent_node->is_file) {
+    *errnoptr = ENOTDIR; // Parent is not a directory
+    return -1;
+  }
 
-    // Proceed with file removal
-    directory_t *dict = &node->type.directory;
-    unsigned long len;
-    char *filename = get_last_token(path, &len);
+  // Extract the filename from the path
+  unsigned long len;
+  char *filename = get_last_token(path, &len);
+  if (filename == NULL || len == 0) {
+    *errnoptr = EINVAL; // Invalid filename
+    return -1;
+  }
 
-    // Ensure no node with the same name exists in the parent directory
-    node_t *file_node = get_node(fsptr, dict, filename);
-    if (file_node == NULL) {
-        *errnoptr = ENOENT; // File does not exist
-        return -1;
-    }
+  // Locate the file node within the parent directory
+  directory_t *dict = &parent_node->type.directory;
+  node_t *file_node = get_node(fsptr, dict, filename);
+  free(filename); // Clean up dynamically allocated memory
+  if (file_node == NULL) {
+    *errnoptr = ENOENT; // File does not exist
+    return -1;
+  }
 
-    // Validate the file type
-    if (!file_node->is_file) {
-        *errnoptr = EISDIR; // Path points to a directory
-        return -1;
-    }
+  // Ensure the node is a regular file
+  if (!file_node->is_file) {
+    *errnoptr = EISDIR; // Cannot unlink a directory
+    return -1;
+  }
 
-    // Free the file information and remove the node
-    file_t *file = &file_node->type.file;
-    if (file->total_size != 0) {
-        free_file_info(fsptr, file);
-    }
+  // Free file information
+  file_t *file = &file_node->type.file;
+  if (file->total_size != 0) {
+    free_file_info(fsptr, file);
+  }
 
-    // Remove the node from the parent directory
-    remove_node(fsptr, dict, file_node);
-    return 0; // Success
+  // Remove the file node from the parent directory
+  remove_node(fsptr, dict, file_node);
+
+  return 0; // Success
 }
 
 /* Implements an emulation of the rmdir system call on the filesystem 
